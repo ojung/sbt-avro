@@ -38,6 +38,7 @@ object SbtAvro extends AutoPlugin {
     val avroFieldVisibility = settingKey[String]("Field visibility for the properties. Possible values: private, public, public_deprecated. Default: public_deprecated.")
     val avroUseNamespace = settingKey[Boolean]("Validate that directory layout reflects namespaces, i.e. src/main/avro/com/myorg/MyRecord.avsc.")
     val avroSource = settingKey[File]("Default Avro source directory.")
+    val avroIncludes = settingKey[Seq[File]]("Avro schema includes.")
     val avroSchemaParserBuilder = settingKey[SchemaParserBuilder](".avsc schema parser builder")
     val avroUnpackDependencies = taskKey[Seq[File]]("Unpack avro dependencies.")
     val avroDependencyIncludeFilter = settingKey[DependencyFilter]("Filter for including modules containing avro dependencies.")
@@ -61,6 +62,7 @@ object SbtAvro extends AutoPlugin {
       // dependencies
       avroUnpackDependencies / target := sourceManaged.value / "avro",
       avroUnpackDependencies := unpackDependenciesTask(avroUnpackDependencies).value,
+      avroIncludes := Seq((avroUnpackDependencies / target).value),
       // source generation
       avroGenerate / target := sourceManaged.value / "compiled_avro",
       managedSourceDirectories += (avroGenerate / target).value,
@@ -169,6 +171,7 @@ object SbtAvro extends AutoPlugin {
 
   private[this] def compileAvroSchema(srcDir: File,
                                       target: File,
+                                      includes: Seq[File],
                                       log: Logger,
                                       stringType: StringType,
                                       fieldVisibility: FieldVisibility,
@@ -180,11 +183,17 @@ object SbtAvro extends AutoPlugin {
       compileIdl(idl, target, stringType, fieldVisibility, enableDecimalLogicalType)
     }
 
+    val includeAvscs = includes.flatMap { include =>
+      val includes = (include ** AvroAvscFilter).get
+      includes.foreach(s => log.info(s"Including: $s"))
+      includes.map(avsc => new AvroFileRef(include, avsc.relativeTo(include).get.toString))
+    }
+
     val avscs = (srcDir ** AvroAvscFilter).get.map { avsc =>
       log.info(s"Compiling Avro schemas $avsc")
       new AvroFileRef(srcDir, avsc.relativeTo(srcDir).get.toString)
     }
-    compileAvscs(avscs, target, stringType, fieldVisibility, enableDecimalLogicalType, useNamespace, builder)
+    compileAvscs(includeAvscs ++ avscs, target, stringType, fieldVisibility, enableDecimalLogicalType, useNamespace, builder)
 
     (srcDir ** AvroAvrpFilter).get.foreach { avpr =>
       log.info(s"Compiling Avro protocol $avpr")
@@ -198,6 +207,7 @@ object SbtAvro extends AutoPlugin {
     val out = (key / streams).value
     val externalSrcDir = (avroUnpackDependencies / target).value
     val srcDir = avroSource.value
+    val includes = avroIncludes.value
     val outDir = (key / target).value
     val strType = StringType.valueOf(avroStringType.value)
     val fieldVis = SpecificCompiler.FieldVisibility.valueOf(avroFieldVisibility.value.toUpperCase)
@@ -207,8 +217,8 @@ object SbtAvro extends AutoPlugin {
     val cachedCompile = {
       FileFunction.cached(out.cacheDirectory / "avro", FilesInfo.lastModified, FilesInfo.exists) { _ =>
         out.log.info(s"Avro compiler using stringType=$strType")
-        compileAvroSchema(externalSrcDir, outDir, out.log, strType, fieldVis, enbDecimal, useNs, builder)
-        compileAvroSchema(srcDir, outDir, out.log, strType, fieldVis, enbDecimal, useNs, builder)
+        compileAvroSchema(externalSrcDir, outDir, Seq.empty, out.log, strType, fieldVis, enbDecimal, useNs, builder)
+        compileAvroSchema(srcDir, outDir, includes, out.log, strType, fieldVis, enbDecimal, useNs, builder)
 
       }
     }
